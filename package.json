@@ -1,0 +1,36 @@
+{
+  "name": "agent-next-boilerplate",
+  "version": "0.2.0",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"next dev\" \"pnpm make-agent dev\"",
+    "dev:agent": "next dev",
+    "prepare": "turbo build --filter=make-agent",
+    "build": "next build",
+    "build:deploy": "next build && pnpm make-agent deploy -u https://agent-next-boilerplate.vercel.app",
+    "start": "next start",
+    "clean": "rm -rf .next",
+    "clean:all": "rm -rf .next node_modules .turbo"
+  },
+  "dependencies": {
+    "@bitte-ai/agent-sdk": "^0.1.10",
+    "make-agent": "^0.3.1",
+    "near-api-js": "^5.1.1",
+    "near-safe": "^0.9.12",
+    "next": "^15.2.4",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "redoc": "^2.4.0",
+    "vercel-url": "^0.2.6",
+    "viem": "2.29.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.13",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "concurrently": "^9.1.2",
+    "eslint": "^9.23.0",
+    "eslint-config-next": "^15.2.4",
+    "typescript": "^5.8.2"
+  }
+}
