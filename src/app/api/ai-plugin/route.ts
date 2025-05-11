@@ -19,9 +19,56 @@ export async function GET() {
       assistant: {
         name: 'Gnosis Pilot',
         description:
-          "A DeFi assistant that helps optimize your yield strategy portfolio on Gnosis Chain based on risk preferences and current holdings.",
-        instructions:
-          "You're Gnosis Pilot, a specialized DeFi advisor focused on optimizing yields on Gnosis Chain. You help users discover and implement yield strategies based on their risk profile (low, medium, high) and current holdings. You can fetch user portfolios, suggest optimized strategy allocations, provide detailed information about different DeFi protocols, and help users execute transactions to enter or exit positions. For transactions, you must first generate a transaction payload using the appropriate endpoints (/api/pilot/create-transaction), then explicitly use the 'generate-evm-tx' tool to execute the transaction on the client side.",
+          "A DeFi assistant that helps optimize your yield strategy portfolio on Gnosis Chain based on risk preferences and current holdings. You can explore available liquidity pools with detailed APY, TVL, and token information.",
+        instructions: `You're Gnosis Pilot, a specialized DeFi advisor focused on optimizing yields on Gnosis Chain. You adhere to the following strict protocol:
+
+CORE FUNCTIONALITY:
+- ALWAYS help users optimize yield strategies based on their risk profile (low, medium, high) and current holdings
+- ALWAYS fetch user portfolios when needed for personalized recommendations
+- ALWAYS provide detailed information about DeFi protocols when requested
+- ALWAYS browse available liquidity pools by protocol or token when needed
+- ALWAYS help users execute transactions to enter or exit positions
+
+WORKFLOW REQUIREMENTS:
+- ALWAYS use get-strategies endpoint first to display available strategies to users
+- ALWAYS proactively ask if users would like to execute any specific strategies shown
+- NEVER use the create-transaction endpoint directly
+- ALWAYS use execute-strategy endpoint when a user selects a strategy
+- CRITICAL: When calling execute-strategy endpoint, you MUST include ALL required parameters: strategyId, userAddress, action, and amount
+- ALWAYS POST to /api/pilot/execute-strategy with complete body: {"strategyId": "STRATEGY_ID", "userAddress": "USER_ADDRESS", "action": "enter", "amount": "AMOUNT_VALUE"}
+- ALWAYS use the 'generate-evm-tx' tool to execute transactions on the client side
+- NEVER call getStrategyDetails when a user wants to execute a transaction - go straight to execute-strategy
+- CRITICAL: When a user mentions a specific pool they want to enter (like "Balancer V2 OLAS-WXDAI"), IMMEDIATELY use execute-strategy endpoint
+
+STRATEGY HANDLING:
+- ALWAYS explain risk levels (low, medium, high) when discussing strategies
+- ALWAYS include APY information when presenting strategies
+- ALWAYS explain TVL (Total Value Locked) metrics when relevant
+- ALWAYS verify user address before proceeding with portfolio analysis
+- ALWAYS present multiple options when recommending strategies
+
+TRANSACTION EXECUTION:
+- ALWAYS confirm transaction details with users before execution
+- ALWAYS explain gas fees and potential slippage when relevant
+- ALWAYS verify the user has sufficient balance before transaction execution
+- NEVER recommend transactions beyond a user's available balance
+- ALWAYS follow up after transaction execution to confirm success
+- CRITICAL: When a user indicates intent to enter a pool (e.g., "yes 1x dai on Balancer V2 OLAS-WXDAI"), IMMEDIATELY execute the transaction using execute-strategy and generate-evm-tx
+- CRITICAL: When executing a strategy, ALWAYS specify the action as one of: "deposit", "withdraw", "addLiquidity", "removeLiquidity", "stake", "unstake", "enter", or "exit"
+
+POOL AND TOKEN IDENTIFICATION:
+- ALWAYS identify pool strategy by protocol and token pair (e.g., "Balancer V2 OLAS-WXDAI")
+- ALWAYS map user-mentioned tokens to their proper representations (e.g., "xDAI" to "WXDAI" or vice versa as needed)
+- NEVER attempt to get additional details about a pool when the user has already decided to enter it
+- ALWAYS proceed directly to execution when the user specifies both the pool and amount
+
+GNOSIS CHAIN SPECIFICS:
+- ONLY operate on Gnosis Chain (chainId: 100)
+- ALWAYS verify compatibility of tokens and protocols on Gnosis Chain
+- ALWAYS use appropriate token addresses specific to Gnosis Chain
+- NEVER recommend strategies not available on Gnosis Chain
+
+You must follow these specifications with zero deviation to ensure secure, accurate, and valuable DeFi optimization services.`,
         tools: [
           { type: 'generate-evm-tx' },
         ],
@@ -61,6 +108,110 @@ export async function GET() {
                 type: 'string',
               },
               description: 'Maximum APY percentage (e.g., "20" for 20%)',
+            },
+            {
+              name: 'source',
+              in: 'query',
+              required: false,
+              schema: {
+                type: 'string',
+                enum: ['all', 'defillama', 'subgraph'],
+                default: 'all',
+              },
+              description: 'Data source for strategies',
+            },
+            {
+              name: 'protocol',
+              in: 'query',
+              required: false,
+              schema: {
+                type: 'string',
+              },
+              description: 'Filter by specific protocol name',
+            },
+            {
+              name: 'skipCache',
+              in: 'query',
+              required: false,
+              schema: {
+                type: 'boolean',
+                default: false,
+              },
+              description: 'Whether to skip cached results and fetch fresh data',
+            },
+            {
+              name: 'address',
+              in: 'query',
+              required: false,
+              schema: {
+                type: 'string',
+              },
+              description: 'Wallet address for portfolio analysis and personalized recommendations',
+            },
+            {
+              name: 'minApyMean30d',
+              in: 'query',
+              required: false,
+              schema: {
+                type: 'string',
+              },
+              description: 'Minimum 30-day mean APY percentage',
+            },
+            {
+              name: 'maxApyMean30d',
+              in: 'query',
+              required: false,
+              schema: {
+                type: 'string',
+              },
+              description: 'Maximum 30-day mean APY percentage',
+            },
+            {
+              name: 'asset',
+              in: 'query',
+              required: false,
+              schema: {
+                type: 'string',
+              },
+              description: 'Filter by asset or token name',
+            },
+            {
+              name: 'exposure',
+              in: 'query',
+              required: false,
+              schema: {
+                type: 'string',
+              },
+              description: 'Filter by exposure type',
+            },
+            {
+              name: 'predictedClass',
+              in: 'query',
+              required: false,
+              schema: {
+                type: 'string',
+              },
+              description: 'Filter by predicted yield class',
+            },
+            {
+              name: 'limit',
+              in: 'query',
+              required: false,
+              schema: {
+                type: 'integer',
+                default: 50,
+              },
+              description: 'Number of results to return per page',
+            },
+            {
+              name: 'offset',
+              in: 'query',
+              required: false,
+              schema: {
+                type: 'integer',
+                default: 0,
+              },
+              description: 'Offset for pagination',
             },
           ],
           responses: {
@@ -116,8 +267,229 @@ export async function GET() {
                               type: 'string',
                               description: 'Blockchain network (gnosis)',
                             },
+                            apyBase: {
+                              type: 'number',
+                              description: 'Base APY without rewards',
+                              nullable: true
+                            },
+                            apyReward: {
+                              type: 'number',
+                              description: 'APY from rewards only',
+                              nullable: true
+                            },
+                            apyPct1D: {
+                              type: 'number',
+                              description: '1-day APY percentage change',
+                              nullable: true
+                            },
+                            apyPct7D: {
+                              type: 'number',
+                              description: '7-day APY percentage change',
+                              nullable: true
+                            },
+                            apyPct30D: {
+                              type: 'number',
+                              description: '30-day APY percentage change',
+                              nullable: true
+                            },
+                            apyMean30d: {
+                              type: 'number',
+                              description: '30-day mean APY',
+                              nullable: true
+                            },
+                            exposure: {
+                              type: 'string',
+                              description: 'Market exposure category',
+                              nullable: true
+                            },
+                            underlyingTokens: {
+                              type: 'array',
+                              items: {
+                                type: 'string'
+                              },
+                              description: 'Underlying tokens in the strategy',
+                              nullable: true
+                            },
+                            rewardTokens: {
+                              type: 'array',
+                              items: {
+                                type: 'string'
+                              },
+                              description: 'Reward tokens provided by the strategy',
+                              nullable: true
+                            },
+                            pool: {
+                              type: 'string',
+                              description: 'Pool identifier',
+                              nullable: true
+                            },
+                            predictions: {
+                              type: 'object',
+                              properties: {
+                                predictedClass: {
+                                  type: 'string',
+                                  description: 'Predicted yield class'
+                                },
+                                predictedProbability: {
+                                  type: 'number',
+                                  description: 'Probability of the prediction'
+                                },
+                                binnedConfidence: {
+                                  type: 'number',
+                                  description: 'Binned confidence level'
+                                }
+                              },
+                              description: 'Yield prediction data',
+                              nullable: true
+                            },
+                            portfolioMatch: {
+                              type: 'object',
+                              properties: {
+                                matchingTokens: {
+                                  type: 'array',
+                                  items: {
+                                    type: 'string'
+                                  },
+                                  description: 'Tokens matching user portfolio'
+                                },
+                                matchScore: {
+                                  type: 'number',
+                                  description: 'Portfolio match score'
+                                },
+                                recommendationReason: {
+                                  type: 'string',
+                                  description: 'Reason for recommendation'
+                                }
+                              },
+                              description: 'Portfolio match information when address is provided',
+                              nullable: true
+                            }
                           },
                         },
+                      },
+                      total: {
+                        type: 'number',
+                        description: 'Total number of strategies matching the criteria'
+                      }
+                    },
+                  },
+                },
+              },
+            },
+            '500': {
+              description: 'Server error',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      error: {
+                        type: 'string',
+                        description: 'Error message',
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      '/api/pilot/execute-strategy': {
+        post: {
+          summary: 'Execute a DeFi strategy on Gnosis Chain',
+          description: 'Executes a selected yield strategy on Gnosis Chain through a transaction',
+          operationId: 'executeGnosisStrategy',
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['strategyId', 'userAddress', 'action', 'amount'],
+                  properties: {
+                    strategyId: {
+                      type: 'string',
+                      description: 'ID of the strategy to execute',
+                    },
+                    userAddress: {
+                      type: 'string',
+                      description: 'User\'s EVM wallet address',
+                    },
+                    action: {
+                      type: 'string',
+                      enum: ['deposit', 'withdraw', 'addLiquidity', 'removeLiquidity', 'stake', 'unstake', 'enter', 'exit'],
+                      description: 'Action to perform with the strategy. Use "enter" for adding liquidity to pools.',
+                      default: 'enter'
+                    },
+                    amount: {
+                      type: 'string',
+                      description: 'Amount to use in the transaction',
+                    },
+                    slippageTolerance: {
+                      type: 'string',
+                      description: 'Optional slippage tolerance in percentage (e.g., "0.5" for 0.5%)',
+                    }
+                  }
+                }
+              }
+            }
+          },
+          responses: {
+            '200': {
+              description: 'Strategy execution initiated successfully',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      success: {
+                        type: 'boolean',
+                        description: 'Whether the transaction was successfully submitted',
+                      },
+                      transactionHash: {
+                        type: 'string',
+                        description: 'The transaction hash if successful',
+                      },
+                      message: {
+                        type: 'string',
+                        description: 'Success message with details',
+                      },
+                      strategyDetails: {
+                        type: 'object',
+                        description: 'Details about the executed strategy',
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            '400': {
+              description: 'Bad request',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      error: {
+                        type: 'string',
+                        description: 'Error message',
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            '404': {
+              description: 'Strategy not found',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      error: {
+                        type: 'string',
+                        description: 'Error message',
                       },
                     },
                   },
@@ -419,7 +791,7 @@ export async function GET() {
               required: true,
               schema: {
                 type: 'string',
-                enum: ['deposit', 'withdraw', 'addLiquidity', 'removeLiquidity', 'stake', 'unstake'],
+                enum: ['deposit', 'withdraw', 'addLiquidity', 'removeLiquidity', 'stake', 'unstake', 'enter', 'exit'],
               },
               description: 'The action to perform with the strategy',
             },
@@ -440,6 +812,16 @@ export async function GET() {
                 type: 'string',
               },
               description: 'The user\'s EVM address',
+            },
+            {
+              name: 'promptExecution',
+              in: 'query',
+              required: false,
+              schema: {
+                type: 'boolean',
+                default: false
+              },
+              description: 'Whether to prompt the user to execute the transaction immediately after generating the payload',
             },
           ],
           responses: {
@@ -834,6 +1216,348 @@ export async function GET() {
                   },
                 },
               },
+            },
+            '400': {
+              description: 'Bad request',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      error: {
+                        type: 'string',
+                        description: 'Error message',
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            '500': {
+              description: 'Server error',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      error: {
+                        type: 'string',
+                        description: 'Error message',
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      '/api/pilot/get-pools': {
+        get: {
+          summary: 'Get available liquidity pools on Gnosis Chain',
+          description: 'Returns a list of available liquidity pools on Gnosis Chain with details about APY, TVL, and tokens from DeFi Llama',
+          operationId: 'getGnosisPools',
+          parameters: [
+            {
+              name: 'project',
+              in: 'query',
+              required: false,
+              schema: {
+                type: 'string',
+                description: 'Filter pools by protocol name (e.g., balancer-v2, sdai, aura)',
+              },
+              description: 'Filter pools by protocol/project',
+            },
+            {
+              name: 'symbol',
+              in: 'query',
+              required: false,
+              schema: {
+                type: 'string',
+              },
+              description: 'Filter pools by symbol/token pair (e.g., WETH-WSTETH)',
+            },
+            {
+              name: 'minTvl',
+              in: 'query',
+              required: false,
+              schema: {
+                type: 'string',
+              },
+              description: 'Minimum TVL in USD (e.g., "10000" for $10,000)',
+            },
+            {
+              name: 'maxTvl',
+              in: 'query',
+              required: false,
+              schema: {
+                type: 'string',
+              },
+              description: 'Maximum TVL in USD',
+            },
+            {
+              name: 'minApy',
+              in: 'query',
+              required: false,
+              schema: {
+                type: 'string',
+              },
+              description: 'Minimum APY percentage',
+            },
+            {
+              name: 'maxApy',
+              in: 'query',
+              required: false,
+              schema: {
+                type: 'string',
+              },
+              description: 'Maximum APY percentage',
+            },
+            {
+              name: 'minApyMean30d',
+              in: 'query',
+              required: false,
+              schema: {
+                type: 'string',
+              },
+              description: 'Minimum 30-day mean APY',
+            },
+            {
+              name: 'maxApyMean30d',
+              in: 'query',
+              required: false,
+              schema: {
+                type: 'string',
+              },
+              description: 'Maximum 30-day mean APY',
+            },
+            {
+              name: 'asset',
+              in: 'query',
+              required: false,
+              schema: {
+                type: 'string',
+              },
+              description: 'Filter pools containing specific token (symbol)',
+            },
+            {
+              name: 'stablecoin',
+              in: 'query',
+              required: false,
+              schema: {
+                type: 'boolean',
+              },
+              description: 'Filter by stablecoin pools only',
+            },
+            {
+              name: 'ilRisk',
+              in: 'query',
+              required: false,
+              schema: {
+                type: 'string',
+                enum: ['yes', 'no'],
+              },
+              description: 'Filter by impermanent loss risk',
+            },
+            {
+              name: 'exposure',
+              in: 'query',
+              required: false,
+              schema: {
+                type: 'string',
+                enum: ['single', 'multi'],
+              },
+              description: 'Filter by asset exposure type',
+            },
+            {
+              name: 'predictedClass',
+              in: 'query',
+              required: false,
+              schema: {
+                type: 'string',
+              },
+              description: 'Filter by predicted APY direction (e.g., "Stable/Up")',
+            },
+            {
+              name: 'minConfidence',
+              in: 'query',
+              required: false,
+              schema: {
+                type: 'string',
+              },
+              description: 'Minimum prediction confidence level',
+            },
+            {
+              name: 'risk',
+              in: 'query',
+              required: false,
+              schema: {
+                type: 'string',
+                enum: ['low', 'medium', 'high', 'all'],
+                default: 'all',
+              },
+              description: 'Filter pools by risk level',
+            },
+            {
+              name: 'limit',
+              in: 'query',
+              required: false,
+              schema: {
+                type: 'integer',
+                default: 50,
+              },
+              description: 'Maximum number of pools to return',
+            },
+            {
+              name: 'offset',
+              in: 'query',
+              required: false,
+              schema: {
+                type: 'integer',
+                default: 0,
+              },
+              description: 'Number of pools to skip for pagination',
+            }
+          ],
+          responses: {
+            '200': {
+              description: 'Successful response',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      pools: {
+                        type: 'array',
+                        items: {
+                          type: 'object',
+                          properties: {
+                            id: {
+                              type: 'string',
+                              description: 'Unique identifier for the pool',
+                            },
+                            name: {
+                              type: 'string',
+                              description: 'Pool name (project + symbol)',
+                            },
+                            chain: {
+                              type: 'string',
+                              description: 'Blockchain name (Gnosis)',
+                            },
+                            project: {
+                              type: 'string',
+                              description: 'Protocol name (e.g., balancer-v2, sdai)',
+                            },
+                            symbol: {
+                              type: 'string',
+                              description: 'Pool symbol/token pair',
+                            },
+                            tvlUsd: {
+                              type: 'number',
+                              description: 'Total value locked in USD',
+                            },
+                            apyBase: {
+                              type: 'number',
+                              nullable: true,
+                              description: 'Base APY without rewards',
+                            },
+                            apyReward: {
+                              type: 'number',
+                              nullable: true,
+                              description: 'Reward APY',
+                            },
+                            apy: {
+                              type: 'number',
+                              description: 'Total APY (base + reward)',
+                            },
+                            rewardTokens: {
+                              type: 'array',
+                              nullable: true,
+                              items: {
+                                type: 'string'
+                              },
+                              description: 'Reward token addresses',
+                            },
+                            pool: {
+                              type: 'string',
+                              description: 'Pool ID',
+                            },
+                            apyPct1D: {
+                              type: 'number',
+                              nullable: true,
+                              description: '1-day APY percentage change',
+                            },
+                            apyPct7D: {
+                              type: 'number',
+                              nullable: true,
+                              description: '7-day APY percentage change',
+                            },
+                            apyPct30D: {
+                              type: 'number',
+                              nullable: true,
+                              description: '30-day APY percentage change',
+                            },
+                            stablecoin: {
+                              type: 'boolean',
+                              description: 'Whether the pool is for stablecoins',
+                            },
+                            ilRisk: {
+                              type: 'string',
+                              description: 'Impermanent loss risk (yes/no)',
+                            },
+                            exposure: {
+                              type: 'string',
+                              description: 'Asset exposure type (single/multi)',
+                            },
+                            predictions: {
+                              type: 'object',
+                              properties: {
+                                predictedClass: {
+                                  type: 'string',
+                                  description: 'Predicted APY direction',
+                                },
+                                predictedProbability: {
+                                  type: 'number',
+                                  description: 'Probability of prediction',
+                                },
+                                binnedConfidence: {
+                                  type: 'number',
+                                  description: 'Confidence level',
+                                }
+                              },
+                              description: 'APY prediction data',
+                            },
+                            underlyingTokens: {
+                              type: 'array',
+                              nullable: true,
+                              items: {
+                                type: 'string'
+                              },
+                              description: 'Addresses of underlying tokens',
+                            },
+                            assets: {
+                              type: 'array',
+                              items: {
+                                type: 'string'
+                              },
+                              description: 'Asset symbols in the pool',
+                            },
+                            risk: {
+                              type: 'string',
+                              description: 'Risk level (low, medium, high)',
+                            },
+                            apyMean30d: {
+                              type: 'number',
+                              nullable: true,
+                              description: '30-day mean APY',
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
             },
             '400': {
               description: 'Bad request',

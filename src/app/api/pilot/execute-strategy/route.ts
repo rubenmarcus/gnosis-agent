@@ -1,10 +1,11 @@
 import { NextResponse } from 'next/server';
-import { parseEther, encodeFunctionData, toHex } from 'viem';
 import { getDefiLlamaStrategies } from '../get-strategies/route';
+import { parseEther, encodeFunctionData, toHex, getAddress, Address } from 'viem';
 
-// Import or copy the necessary functions and constants from execute-strategy
+// Protocol router addresses on Gnosis Chain
 const PROTOCOL_ROUTERS: Record<string, string> = {
   'agave': '0x5E15d5E33d318dCEd84Bfe3F4EACe07909bE6d99', // Agave LendingPool
+  'aave': '0xb50201558B00496A145fE76f7424749556E326D8', // Aave v3 Pool
   'honeyswap': '0x1C232F01118CB8B424793ae03F870aa7D0ac7f77', // Honeyswap Router
   'sushiswap': '0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506', // SushiSwap Router
   'curve': '0x0C0BF2bD544566A11f59dC70a8F43659ac2FE7c2', // Curve Gnosis Pool
@@ -16,13 +17,19 @@ const PROTOCOL_ROUTERS: Record<string, string> = {
   'honeycomb': '0x77F99B212Ef4C78c64b7BAD038A7FE6882Bc9BF1',
 };
 
+// Balancer Vault address on Gnosis Chain
+const BALANCER_VAULT = '0xBA12222222228d8Ba445958a75a0704d566BF2C8';
+
+// For Aura/Balancer pool IDs on Gnosis Chain
+const POOL_IDS: Record<string, string> = {
+  'SDAI-STATAGNOUSDCE': '0x00d7c137996aa7bf16d83ecbfd4d3d5cce77c0c8000200000000000000000a25',
+  // Add other pool IDs as needed
+};
+
 // Native token representation addresses
 const NATIVE_TOKEN_ADDRESS = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE';
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 const WXDAI_ADDRESS = '0xe91D153E0b41518A2Ce8Dd3D7944Fa863463a97d';
-
-// Balancer Vault address on Gnosis Chain
-const BALANCER_VAULT = '0xBA12222222228d8Ba445958a75a0704d566BF2C8';
 
 // Max approval amount for ERC20 tokens
 const MAX_APPROVAL = BigInt(
@@ -246,13 +253,22 @@ interface MetaTransaction {
   from: string;
 }
 
-// Interface for transaction payload response
-interface TransactionPayload {
-  to: string;
-  from: string;
-  value: string;
-  data: string;
+// Interface for SignRequestData
+interface SignRequestData {
+  method: 'eth_sendTransaction';
   chainId: number;
+  params: MetaTransaction[];
+}
+
+// Interface for our response
+interface ExecuteStrategyResponse {
+  signRequest: SignRequestData;
+  message: string;
+  meta?: {
+    strategyId: string;
+    protocol: string;
+    type: string;
+  };
 }
 
 // Helper to create approval transaction
@@ -275,6 +291,29 @@ function createApprovalTransaction(
   };
 }
 
+// Helper to encode Balancer joinPool userData
+function encodeBalancerJoinPoolData(amountIn: bigint): string {
+  // Encode userData for exact tokens in with minimum BPT out
+  // Format: (1, [amountsIn], minBPT)
+  return encodeFunctionData({
+    abi: [{
+      name: 'joinExactTokensInForBPTOut',
+      type: 'function',
+      inputs: [
+        { name: 'amountsIn', type: 'uint256[]' },
+        { name: 'minimumBPT', type: 'uint256' }
+      ],
+      outputs: [],
+      stateMutability: 'nonpayable'
+    }],
+    functionName: 'joinExactTokensInForBPTOut',
+    args: [
+      [amountIn, BigInt(0)], // Only provide the first token
+      BigInt(0) // Minimum BPT out (0 for now, can be adjusted for slippage protection)
+    ]
+  });
+}
+
 // Check if token is a native token representation
 function isNativeTokenAddress(address: string): boolean {
   const lowerAddress = address.toLowerCase();
@@ -285,29 +324,29 @@ function isNativeTokenAddress(address: string): boolean {
 // Generate transaction data based on strategy and amount
 async function generateTransactionData(
   strategyId: string,
-  action: string,
   amount: string,
-  userAddress: string
-): Promise<TransactionPayload | null> {
+  userAddress: string,
+  action = 'enter'
+): Promise<ExecuteStrategyResponse | null> {
   try {
     // Get strategies from DeFiLlama
     const strategies = await getDefiLlamaStrategies();
 
-    // Find the specific strategy
+    // Find the selected strategy
     const strategy = strategies.find(s => s.id === strategyId);
     if (!strategy) {
-      throw new Error(`Strategy with ID ${strategyId} not found`);
+      throw new Error('Strategy not found');
     }
 
-    // Map action to the appropriate function
-    const mappedAction = mapActionToFunction(action, strategy.type);
+    // Ensure the strategy has underlying tokens
+    if (!strategy.underlyingTokens || strategy.underlyingTokens.length === 0) {
+      throw new Error(`Strategy ${strategyId} has no underlying tokens defined`);
+    }
 
-    // Get token address from strategy (assuming first token in underlying tokens)
-    const tokenAddress = strategy.underlyingTokens && strategy.underlyingTokens.length > 0
-      ? strategy.underlyingTokens[0]
-      : '0x0000000000000000000000000000000000000000';
+    // Get the first token address (primary token for the strategy)
+    const tokenAddress = strategy.underlyingTokens[0];
 
-    // Validate the token address is not zero
+    // Validate the token address is not a placeholder or zero address
     if (!tokenAddress) {
       throw new Error(`Invalid token address for strategy ${strategyId}`);
     }
@@ -325,19 +364,19 @@ async function generateTransactionData(
     // Convert amount to wei format (hex string)
     const amountInWei = toHex(parseEther(amount));
 
-    // Check if the strategy involves native token (xDAI)
-    const isNativeToken = isNativeTokenAddress(tokenAddress);
+    // Array to hold all transactions (approvals + main transaction)
+    const metaTransactions: MetaTransaction[] = [];
 
-    // Determine if we need approval and set up transaction data
+    // Main transaction data
     let txData: string;
     let requiresApproval = false;
 
-    // Transaction array to gather all operations
-    const metaTransactions: MetaTransaction[] = [];
+    // Check if the strategy involves native token (xDAI)
+    const isNativeToken = isNativeTokenAddress(tokenAddress);
 
-    // Generate transaction data based on action and strategy type
-    if (mappedAction === 'supply' || action === 'deposit' || action === 'enter') {
-      // For lending or deposit actions
+    // Determine if we need approval and set the token address based on strategy type
+    if (strategy.type === 'Lending') {
+      // Generate lending transaction data
       requiresApproval = !isNativeToken; // Only require approval for non-native tokens
 
       if (protocolKey === 'agave') {
@@ -353,6 +392,7 @@ async function generateTransactionData(
           ]
         });
       } else {
+        // Use generic lending function
         txData = encodeFunctionData({
           abi: [FUNCTION_ABIS.lend],
           functionName: 'supply',
@@ -364,24 +404,101 @@ async function generateTransactionData(
           ]
         });
       }
-    } else if (mappedAction === 'addLiquidity' || action === 'addLiquidity') {
-      // For liquidity providing actions
+    } else if (strategy.type === 'Liquidity Providing') {
+      // Most LP actions require token approval
       requiresApproval = !isNativeToken;
 
-      // Handle Balancer/Aura protocols
       if (protocolKey === 'aura' || protocolKey === 'balancer') {
-        // Balancer-style protocols need the Balancer Vault as target
-        targetAddress = BALANCER_VAULT;
+        // Extract pool name from strategy name
+        // Strategy names can be formatted like "Aura SDAI-STATAGNOUSDCE" or similar
+        let poolName = '';
 
-        // To do - implement Balancer pool joining specific to this createTransaction route
-        // For now using a placeholder that will throw an appropriate error
-        throw new Error('Balancer/Aura pool joining not yet implemented in this endpoint. Use execute-strategy instead');
-      }
+        // Try to extract the pool name from the strategy name or description
+        if (strategy.name.includes('SDAI-STATAGNOUSDCE')) {
+          poolName = 'SDAI-STATAGNOUSDCE';
+        } else {
+          // Generic fallback extraction (improve this as needed)
+          const poolNameMatch = strategy.name.match(/AURA.+?(\S+-\S+)/i) ||
+                               strategy.name.match(/(\S+-\S+)/);
+          poolName = poolNameMatch ? poolNameMatch[1] : '';
+        }
 
-      // Handle Curve protocols
-      if (protocolKey === 'curve') {
-        // For Curve-style pools
+        console.log(`Extracted pool name: ${poolName}`);
+
+        const poolId = POOL_IDS[poolName];
+
+        if (!poolId) {
+          throw new Error(`Pool ID not found for ${poolName} in Aura/Balancer strategy ${strategy.name}`);
+        }
+
+        // For Aura/Balancer, use the Balancer Vault as spender for approvals
         if (requiresApproval) {
+          metaTransactions.push(createApprovalTransaction(
+            tokenAddress,
+            BALANCER_VAULT,
+            userAddress
+          ));
+        }
+
+        // Get the tokens array from the strategy
+        const tokensArray = strategy.underlyingTokens.map(token => token as `0x${string}`);
+
+        // Check if the first token is xDAI (native token)
+        if (isNativeToken) {
+          // Replace the xDAI placeholder with WETH address since Balancer uses WETH for native token
+          // On Gnosis Chain, WXDAI is used
+          tokensArray[0] = WXDAI_ADDRESS as `0x${string}`;
+
+          // Create an array of maxAmountsIn (only first token has amount)
+          const maxAmountsIn = tokensArray.map((_, index) =>
+            index === 0 ? parseEther(amount) : BigInt(0)
+          );
+
+          // Create Balancer joinPoolETH function call for native token
+          txData = encodeFunctionData({
+            abi: [FUNCTION_ABIS.balancerJoinETH],
+            functionName: 'joinPoolETH',
+            args: [
+              poolId as `0x${string}`,
+              userAddress as `0x${string}`,
+              [
+                tokensArray,
+                maxAmountsIn,
+                encodeBalancerJoinPoolData(parseEther(amount)),
+                false // fromInternalBalance
+              ]
+            ]
+          });
+        } else {
+          // Create an array of maxAmountsIn (only first token has amount)
+          const maxAmountsIn = tokensArray.map((_, index) =>
+            index === 0 ? parseEther(amount) : BigInt(0)
+          );
+
+          // Create Balancer joinPool function call for ERC20 tokens
+          txData = encodeFunctionData({
+            abi: [FUNCTION_ABIS.balancerJoin],
+            functionName: 'joinPool',
+            args: [
+              poolId as `0x${string}`,
+              userAddress as `0x${string}`,
+              userAddress as `0x${string}`,
+              [
+                tokensArray,
+                maxAmountsIn,
+                encodeBalancerJoinPoolData(parseEther(amount)),
+                false // fromInternalBalance
+              ]
+            ]
+          });
+        }
+
+        // Balancer Vault is the target for the transaction, not the Aura router
+        targetAddress = BALANCER_VAULT;
+      } else if (protocolKey === 'curve') {
+        // For Curve-style pools
+        // Require approval for the curve router
+        if (!isNativeToken) {
           metaTransactions.push(createApprovalTransaction(
             tokenAddress,
             routerAddress,
@@ -397,9 +514,10 @@ async function generateTransactionData(
             BigInt(0) // min_mint_amount
           ]
         });
-      } else { // Handle other DEXes (Uniswap/Sushiswap/Honeyswap style pools)
+      } else {
+        // For Uniswap/Sushiswap/Honeyswap style pools
         // Get the second token for the pair
-        if (!strategy.underlyingTokens || strategy.underlyingTokens.length < 2) {
+        if (strategy.underlyingTokens.length < 2) {
           throw new Error(`Liquidity providing strategy ${strategyId} requires at least 2 tokens`);
         }
 
@@ -413,7 +531,7 @@ async function generateTransactionData(
         // Check if one of the tokens is the native token
         const tokenBIsNative = isNativeTokenAddress(tokenB);
 
-        // Add approvals if needed
+        // Require approval for the token (if it's not the native token)
         if (!isNativeToken) {
           metaTransactions.push(createApprovalTransaction(
             tokenAddress,
@@ -423,6 +541,7 @@ async function generateTransactionData(
         }
 
         if (!tokenBIsNative && !isNativeToken) {
+          // Also need approval for tokenB
           metaTransactions.push(createApprovalTransaction(
             tokenB,
             routerAddress,
@@ -462,8 +581,8 @@ async function generateTransactionData(
           });
         }
       }
-    } else if (mappedAction === 'stake' || action === 'stake') {
-      // For staking actions
+    } else if (strategy.type === 'Staking') {
+      // Some staking requires approval
       requiresApproval = !isNativeToken;
 
       if (requiresApproval) {
@@ -498,15 +617,15 @@ async function generateTransactionData(
       });
     }
 
-    // Build the transaction payload
-    const mainTransaction = {
+    // Add the main transaction
+    const mainTx: MetaTransaction = {
       to: targetAddress,
       data: txData,
-      value: isNativeToken ? amountInWei : '0x0',
-      from: userAddress
+      value: isNativeToken ? amountInWei : '0x0', // Only send value if it's a native token operation
+      from: userAddress,
     };
 
-    metaTransactions.push(mainTransaction);
+    metaTransactions.push(mainTx);
 
     // Log the transaction for debugging
     console.log("Generated Tx:", {
@@ -516,14 +635,19 @@ async function generateTransactionData(
       chainId: 100
     });
 
-    // Our response only includes the main transaction for now
-    // In the future, could consider returning all transactions for batch processing
+    // Format as SignRequestData for generate-evm-tx compatibility
     return {
-      to: mainTransaction.to,
-      from: mainTransaction.from,
-      value: mainTransaction.value,
-      data: mainTransaction.data,
-      chainId: 100 // Gnosis Chain
+      signRequest: {
+        method: 'eth_sendTransaction',
+        chainId: 100, // Gnosis Chain
+        params: metaTransactions,
+      },
+      message: `Transaction data generated successfully for ${strategy.name}`,
+      meta: {
+        strategyId,
+        protocol: strategy.protocol,
+        type: strategy.type
+      }
     };
   } catch (error) {
     console.error('Error generating transaction data:', error);
@@ -531,72 +655,37 @@ async function generateTransactionData(
   }
 }
 
-// Helper function to map user-friendly actions to function names
-function mapActionToFunction(action: string, strategyType: string): string {
-  switch (action.toLowerCase()) {
-    case 'enter':
-    case 'deposit':
-      return strategyType === 'Lending' ? 'supply' : 'deposit';
-    case 'exit':
-    case 'withdraw':
-      return strategyType === 'Lending' ? 'withdraw' : 'withdraw';
-    case 'addliquidity':
-      return 'addLiquidity';
-    case 'removeliquidity':
-      return 'removeLiquidity';
-    case 'stake':
-      return 'stake';
-    case 'unstake':
-      return 'unstake';
-    default:
-      return 'deposit'; // Default action
-  }
-}
-
-export async function GET(request: Request) {
+export async function POST(request: Request) {
   try {
-    const { searchParams } = new URL(request.url);
-
-    // Extract required parameters
-    const strategyId = searchParams.get('strategyId');
-    const action = searchParams.get('action');
-    const amount = searchParams.get('amount');
-    const userAddress = searchParams.get('userAddress');
+    const body = await request.json();
+    const { strategyId, amount, userAddress, action } = body;
 
     // Validate required parameters
-    if (!strategyId || !action || !amount || !userAddress) {
+    if (!strategyId || !amount || !userAddress) {
       return NextResponse.json(
-        { error: 'Missing required parameters: strategyId, action, amount, and userAddress are required' },
+        { error: 'Missing required parameters: strategyId, amount, and userAddress are required' },
         { status: 400 }
       );
     }
 
-    // Validate action
-    const validActions = ['deposit', 'withdraw', 'addLiquidity', 'removeLiquidity', 'stake', 'unstake', 'enter', 'exit'];
-    if (!validActions.includes(action)) {
-      return NextResponse.json(
-        { error: `Invalid action: ${action}. Must be one of: ${validActions.join(', ')}` },
-        { status: 400 }
-      );
-    }
+    // Log the action for debugging (will not affect execution since action isn't used in generateTransactionData)
+    console.log(`Executing strategy with action: ${action || 'default'}`);
 
     // Generate transaction data
-    const txPayload = await generateTransactionData(strategyId, action, amount, userAddress);
+    const txResponse = await generateTransactionData(strategyId, amount, userAddress, action);
 
-    if (!txPayload) {
+    if (!txResponse) {
       return NextResponse.json(
         { error: 'Failed to generate transaction data for the selected strategy' },
         { status: 500 }
       );
     }
 
-    return NextResponse.json({
-      transactionPayload: txPayload
-    });
+    return NextResponse.json(txResponse);
   } catch (error) {
-    console.error('Error creating transaction:', error);
+    console.error('Error executing strategy:', error);
     return NextResponse.json(
-      { error: 'Failed to create transaction' },
+      { error: 'Failed to execute strategy' },
       { status: 500 }
     );
   }
