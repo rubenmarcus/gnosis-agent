@@ -14,16 +14,16 @@
   },
   "dependencies": {
     "@bitte-ai/agent-sdk": "^0.1.10",
+    "cheerio": "^1.0.0-rc.12",
     "make-agent": "^0.3.1",
     "near-api-js": "^5.1.1",
-    "near-safe": "^0.9.12",
+    "near-safe": "^0.9.14",
     "next": "^15.2.4",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "redoc": "^2.4.0",
     "vercel-url": "^0.2.6",
-    "viem": "2.29.1",
-    "cheerio": "^1.0.0-rc.12"
+    "viem": "2.29.1"
   },
   "devDependencies": {
     "@types/node": "^22.13.13",

@@ -1,27 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getAddress, isAddress } from 'viem';
 import { stakingService } from '@/app/services/blockchain/transactions/staking';
-
-// Map of supported staking providers on Gnosis Chain
-const STAKING_CONTRACTS = {
-  'gno': '0xabc123...', // Replace with actual contract addresses
-  'agave': '0xdef456...',
-  'swapr': '0xghi789...'
-};
-
-// Map of token addresses for staking contracts
-const TOKEN_CONTRACTS = {
-  'gno': '0x123abc...', // Replace with actual token addresses
-  'agave': '0x456def...',
-  'swapr': '0x789ghi...'
-};
-
-// Map of token decimals
-const TOKEN_DECIMALS = {
-  'gno': 18,
-  'agave': 18,
-  'swapr': 18
-};
+import { STAKING_CONTRACTS, TOKEN_CONTRACTS, TOKEN_DECIMALS } from '@/app/config/contracts';
 
 export async function POST(request: Request) {
   try {

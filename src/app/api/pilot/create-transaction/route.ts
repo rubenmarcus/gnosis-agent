@@ -1,33 +1,14 @@
 import { NextResponse } from 'next/server';
 import { parseEther, encodeFunctionData, toHex } from 'viem';
 import { getDefiLlamaStrategies } from '../get-strategies/route';
-
-// Import or copy the necessary functions and constants from execute-strategy
-const PROTOCOL_ROUTERS: Record<string, string> = {
-  'agave': '0x5E15d5E33d318dCEd84Bfe3F4EACe07909bE6d99', // Agave LendingPool
-  'honeyswap': '0x1C232F01118CB8B424793ae03F870aa7D0ac7f77', // Honeyswap Router
-  'sushiswap': '0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506', // SushiSwap Router
-  'curve': '0x0C0BF2bD544566A11f59dC70a8F43659ac2FE7c2', // Curve Gnosis Pool
-  'balancer': '0xBA12222222228d8Ba445958a75a0704d566BF2C8', // Balancer Vault
-  'stakewise': '0xA4C637e0F704745D782e4C6e12c7dF7C7dCC8F5e', // StakeWise
-  'hyperdrive': '0x25431341A5800759268a6aC1d3CD91C029D7d9f3',
-  'sparklend': '0x2E7d06F1b3a80593f9ab038C94cC64ad175fa8dd',
-  'aura': '0x6A9fF81bbFaD6f8f7654c4e51513e26507680640',
-  'honeycomb': '0x77F99B212Ef4C78c64b7BAD038A7FE6882Bc9BF1',
-};
-
-// Native token representation addresses
-const NATIVE_TOKEN_ADDRESS = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE';
-const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
-const WXDAI_ADDRESS = '0xe91D153E0b41518A2Ce8Dd3D7944Fa863463a97d';
-
-// Balancer Vault address on Gnosis Chain
-const BALANCER_VAULT = '0xBA12222222228d8Ba445958a75a0704d566BF2C8';
-
-// Max approval amount for ERC20 tokens
-const MAX_APPROVAL = BigInt(
-  "115792089237316195423570985008687907853269984665640564039457584007913129639935",
-);
+import {
+  PROTOCOL_ROUTERS,
+  BALANCER_VAULT,
+  NATIVE_TOKEN_ADDRESS,
+  ZERO_ADDRESS,
+  WXDAI_ADDRESS,
+  MAX_APPROVAL
+} from '@/app/config/contracts';
 
 // ABI definitions for different functions
 const FUNCTION_ABIS = {
@@ -238,12 +219,12 @@ const FUNCTION_ABIS = {
   },
 };
 
-// Interface for EVM Transaction Parameters
-interface MetaTransaction {
+// Interface for Safe transaction formatting
+interface SafeTransaction {
   to: string;
-  data: string;
   value: string;
-  from: string;
+  data: string;
+  operation: number;
 }
 
 // Interface for transaction payload response
@@ -255,12 +236,28 @@ interface TransactionPayload {
   chainId: number;
 }
 
+// Interface for our Safe response
+interface CreateTransactionResponse {
+  signRequest: {
+    safeTransactionData: SafeTransaction[];
+    safeTxGas?: number;
+    chainId: number;
+  };
+  message: string;
+  meta?: {
+    strategyId: string;
+    protocol: string;
+    action: string;
+  };
+  transactionPayload?: TransactionPayload;
+}
+
 // Helper to create approval transaction
 function createApprovalTransaction(
   tokenAddress: string,
   spenderAddress: string,
   userAddress: string
-): MetaTransaction {
+): SafeTransaction {
   const txData = encodeFunctionData({
     abi: [FUNCTION_ABIS.approve],
     functionName: 'approve',
@@ -270,8 +267,8 @@ function createApprovalTransaction(
   return {
     to: tokenAddress,
     data: txData,
-    value: '0x0',
-    from: userAddress,
+    value: '0',
+    operation: 0, // Call operation
   };
 }
 
@@ -288,7 +285,7 @@ async function generateTransactionData(
   action: string,
   amount: string,
   userAddress: string
-): Promise<TransactionPayload | null> {
+): Promise<CreateTransactionResponse | null> {
   try {
     // Get strategies from DeFiLlama
     const strategies = await getDefiLlamaStrategies();
@@ -323,7 +320,7 @@ async function generateTransactionData(
     let targetAddress = routerAddress;
 
     // Convert amount to wei format (hex string)
-    const amountInWei = toHex(parseEther(amount));
+    const amountInWei = parseEther(amount);
 
     // Check if the strategy involves native token (xDAI)
     const isNativeToken = isNativeTokenAddress(tokenAddress);
@@ -332,8 +329,8 @@ async function generateTransactionData(
     let txData: string;
     let requiresApproval = false;
 
-    // Transaction array to gather all operations
-    const metaTransactions: MetaTransaction[] = [];
+    // Create Safe transactions array
+    const safeTransactions: SafeTransaction[] = [];
 
     // Generate transaction data based on action and strategy type
     if (mappedAction === 'supply' || action === 'deposit' || action === 'enter') {
@@ -342,26 +339,56 @@ async function generateTransactionData(
 
       if (protocolKey === 'agave') {
         // Use specific Agave deposit function with correct ABI
+        if (requiresApproval) {
+          safeTransactions.push(createApprovalTransaction(
+            tokenAddress,
+            targetAddress,
+            userAddress
+          ));
+        }
+
         txData = encodeFunctionData({
           abi: [FUNCTION_ABIS.agaveDeposit],
           functionName: 'deposit',
           args: [
             isNativeToken ? WXDAI_ADDRESS as `0x${string}` : tokenAddress as `0x${string}`,
-            parseEther(amount),
+            amountInWei,
             userAddress as `0x${string}`,
             0 // referral code
           ]
         });
+
+        safeTransactions.push({
+          to: targetAddress,
+          data: txData,
+          value: isNativeToken ? amountInWei.toString() : '0',
+          operation: 0, // Call operation
+        });
       } else {
+        if (requiresApproval) {
+          safeTransactions.push(createApprovalTransaction(
+            tokenAddress,
+            targetAddress,
+            userAddress
+          ));
+        }
+
         txData = encodeFunctionData({
           abi: [FUNCTION_ABIS.lend],
           functionName: 'supply',
           args: [
             isNativeToken ? WXDAI_ADDRESS as `0x${string}` : tokenAddress as `0x${string}`,
-            parseEther(amount),
+            amountInWei,
             userAddress as `0x${string}`,
             0 // referral code
           ]
+        });
+
+        safeTransactions.push({
+          to: targetAddress,
+          data: txData,
+          value: isNativeToken ? amountInWei.toString() : '0',
+          operation: 0, // Call operation
         });
       }
     } else if (mappedAction === 'addLiquidity' || action === 'addLiquidity') {
@@ -382,7 +409,7 @@ async function generateTransactionData(
       if (protocolKey === 'curve') {
         // For Curve-style pools
         if (requiresApproval) {
-          metaTransactions.push(createApprovalTransaction(
+          safeTransactions.push(createApprovalTransaction(
             tokenAddress,
             routerAddress,
             userAddress
@@ -393,9 +420,16 @@ async function generateTransactionData(
           abi: [FUNCTION_ABIS.curveDeposit],
           functionName: 'add_liquidity',
           args: [
-            [parseEther(amount), BigInt(0), BigInt(0), BigInt(0)], // amounts array (first token only)
+            [amountInWei, BigInt(0), BigInt(0), BigInt(0)], // amounts array (first token only)
             BigInt(0) // min_mint_amount
           ]
+        });
+
+        safeTransactions.push({
+          to: targetAddress,
+          data: txData,
+          value: isNativeToken ? amountInWei.toString() : '0',
+          operation: 0, // Call operation
         });
       } else { // Handle other DEXes (Uniswap/Sushiswap/Honeyswap style pools)
         // Get the second token for the pair
@@ -415,7 +449,7 @@ async function generateTransactionData(
 
         // Add approvals if needed
         if (!isNativeToken) {
-          metaTransactions.push(createApprovalTransaction(
+          safeTransactions.push(createApprovalTransaction(
             tokenAddress,
             routerAddress,
             userAddress
@@ -423,7 +457,7 @@ async function generateTransactionData(
         }
 
         if (!tokenBIsNative && !isNativeToken) {
-          metaTransactions.push(createApprovalTransaction(
+          safeTransactions.push(createApprovalTransaction(
             tokenB,
             routerAddress,
             userAddress
@@ -437,12 +471,19 @@ async function generateTransactionData(
             functionName: 'addLiquidityETH',
             args: [
               isNativeToken ? tokenB as `0x${string}` : tokenAddress as `0x${string}`,
-              parseEther(amount),                           // amountToken
-              BigInt(0),                                    // amountTokenMin
-              BigInt(0),                                    // amountETHMin
-              userAddress as `0x${string}`,                 // to
+              amountInWei,                           // amountToken
+              BigInt(0),                             // amountTokenMin
+              BigInt(0),                             // amountETHMin
+              userAddress as `0x${string}`,          // to
               BigInt(Math.floor(Date.now() / 1000) + 3600)  // deadline (1 hour)
             ]
+          });
+
+          safeTransactions.push({
+            to: targetAddress,
+            data: txData,
+            value: isNativeToken ? amountInWei.toString() : '0',
+            operation: 0, // Call operation
           });
         } else {
           // Use standard addLiquidity for token pairs
@@ -452,13 +493,20 @@ async function generateTransactionData(
             args: [
               tokenAddress as `0x${string}`,
               tokenB as `0x${string}`,
-              parseEther(amount),                           // amountA
-              parseEther(amount),                           // amountB
-              BigInt(0),                                    // minAmountA
-              BigInt(0),                                    // minAmountB
-              userAddress as `0x${string}`,                 // to
+              amountInWei,                           // amountA
+              amountInWei,                           // amountB
+              BigInt(0),                             // minAmountA
+              BigInt(0),                             // minAmountB
+              userAddress as `0x${string}`,          // to
               BigInt(Math.floor(Date.now() / 1000) + 3600)  // deadline (1 hour)
             ]
+          });
+
+          safeTransactions.push({
+            to: targetAddress,
+            data: txData,
+            value: '0',
+            operation: 0, // Call operation
           });
         }
       }
@@ -467,7 +515,7 @@ async function generateTransactionData(
       requiresApproval = !isNativeToken;
 
       if (requiresApproval) {
-        metaTransactions.push(createApprovalTransaction(
+        safeTransactions.push(createApprovalTransaction(
           tokenAddress,
           targetAddress,
           userAddress
@@ -477,14 +525,21 @@ async function generateTransactionData(
       txData = encodeFunctionData({
         abi: [FUNCTION_ABIS.stake],
         functionName: 'stake',
-        args: [parseEther(amount)]
+        args: [amountInWei]
+      });
+
+      safeTransactions.push({
+        to: targetAddress,
+        data: txData,
+        value: isNativeToken ? amountInWei.toString() : '0',
+        operation: 0, // Call operation
       });
     } else {
       // Default deposit function for other types
       requiresApproval = !isNativeToken;
 
       if (requiresApproval) {
-        metaTransactions.push(createApprovalTransaction(
+        safeTransactions.push(createApprovalTransaction(
           tokenAddress,
           targetAddress,
           userAddress
@@ -494,36 +549,47 @@ async function generateTransactionData(
       txData = encodeFunctionData({
         abi: [FUNCTION_ABIS.deposit],
         functionName: 'deposit',
-        args: [parseEther(amount)]
+        args: [amountInWei]
+      });
+
+      safeTransactions.push({
+        to: targetAddress,
+        data: txData,
+        value: isNativeToken ? amountInWei.toString() : '0',
+        operation: 0, // Call operation
       });
     }
 
-    // Build the transaction payload
+    // Build the transaction payload for legacy support
     const mainTransaction = {
       to: targetAddress,
       data: txData,
-      value: isNativeToken ? amountInWei : '0x0',
+      value: isNativeToken ? toHex(amountInWei) : '0x0',
       from: userAddress
     };
 
-    metaTransactions.push(mainTransaction);
-
     // Log the transaction for debugging
-    console.log("Generated Tx:", {
-      to: targetAddress,
-      data: txData,
-      value: isNativeToken ? amountInWei : '0x0',
-      chainId: 100
-    });
+    console.log("Generated Safe Tx:", safeTransactions);
 
-    // Our response only includes the main transaction for now
-    // In the future, could consider returning all transactions for batch processing
+    // Return both Safe format and legacy format
     return {
-      to: mainTransaction.to,
-      from: mainTransaction.from,
-      value: mainTransaction.value,
-      data: mainTransaction.data,
-      chainId: 100 // Gnosis Chain
+      signRequest: {
+        safeTransactionData: safeTransactions,
+        chainId: 100 // Gnosis Chain
+      },
+      message: `Created transaction for ${strategy.protocol} ${action} operation`,
+      meta: {
+        strategyId,
+        protocol: strategy.protocol,
+        action
+      },
+      transactionPayload: {
+        to: mainTransaction.to,
+        from: mainTransaction.from,
+        value: mainTransaction.value,
+        data: mainTransaction.data,
+        chainId: 100 // Gnosis Chain
+      }
     };
   } catch (error) {
     console.error('Error generating transaction data:', error);
@@ -581,18 +647,16 @@ export async function GET(request: Request) {
     }
 
     // Generate transaction data
-    const txPayload = await generateTransactionData(strategyId, action, amount, userAddress);
+    const txResponse = await generateTransactionData(strategyId, action, amount, userAddress);
 
-    if (!txPayload) {
+    if (!txResponse) {
       return NextResponse.json(
         { error: 'Failed to generate transaction data for the selected strategy' },
         { status: 500 }
       );
     }
 
-    return NextResponse.json({
-      transactionPayload: txPayload
-    });
+    return NextResponse.json(txResponse);
   } catch (error) {
     console.error('Error creating transaction:', error);
     return NextResponse.json(

@@ -325,7 +325,7 @@ async function getDefiLlamaStrategies(): Promise<EnhancedStrategy[]> {
 
     // Filter for Gnosis Chain (chain ID 100)
     const gnosisYields = yieldData.data.filter((pool: DefiLlamaPool) =>
-      pool.chain === 'Gnosis' || pool.chain === 'xDai' || pool.chain === '100'
+      pool.chain === 'Gnosis'
     );
 
     // Transform the data to match our strategy format
